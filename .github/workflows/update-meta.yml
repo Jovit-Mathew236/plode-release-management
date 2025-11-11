@@ -1,4 +1,4 @@
-name: Update Meta
+name: Update File Versions
 
 on:
   push:
@@ -20,50 +20,56 @@ jobs:
 
       - name: Detect changed files (ignore workflow files)
         run: |
-          git diff --name-only HEAD~1 HEAD \
+          git diff --name-status HEAD~1 HEAD \
             | grep -v '^\.github/workflows/' \
-            > changed.txt
+            > changes.txt
 
       - name: Ensure meta.yaml exists
         run: |
           if [ ! -f meta.yaml ]; then
-            echo "version: 0.0.0" > meta.yaml
-            echo "last_updated: \"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\"" >> meta.yaml
-            echo "changed_files: []" >> meta.yaml
+            echo "files: {}" > meta.yaml
           fi
 
-      - name: Read & increment version (SemVer)
-        id: version
+      - name: Update file versions
+        id: update
         run: |
-          old_version=$(grep 'version:' meta.yaml | awk '{print $2}')
-          if [ -z "$old_version" ]; then old_version="0.0.0"; fi
+          # Convert YAML to JSON for easy parsing
+          apt-get update && apt-get install -y jq yq
+          yq -o=json '.files' meta.yaml > files.json
 
-          IFS='.' read -r major minor patch <<< "$old_version"
-          patch=$((patch + 1))
-          new_version="$major.$minor.$patch"
+          # Process change list
+          while read status name; do
+            if [[ "$status" == "D" ]]; then
+              jq "del(.\"$name\")" files.json > tmp.json && mv tmp.json files.json
+              continue
+            fi
 
-          # If no real file changed, skip bumping version
-          if [ ! -s changed.txt ]; then
-            new_version="$old_version"
-          fi
+            if jq -e ".\"$name\"" files.json > /dev/null; then
+              # Increment version
+              old_version=$(jq -r ".\"$name\".version" files.json)
+              IFS='.' read -r major minor patch <<< "$old_version"
+              patch=$((patch+1))
+              new_version="$major.$minor.$patch"
+            else
+              # New file → start version 0.0.1
+              new_version="0.0.1"
+            fi
 
-          echo "new_version=$new_version" >> $GITHUB_OUTPUT
+            jq ".\"$name\" = {version:\"$new_version\", last_updated:\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"}" \
+              files.json > tmp.json && mv tmp.json files.json
 
-      - name: Generate updated meta.yaml
-        run: |
-          echo "version: ${{ steps.version.outputs.new_version }}" > meta.yaml
-          echo "last_updated: \"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\"" >> meta.yaml
-          echo "changed_files:" >> meta.yaml
-          while read file; do
-            echo "  - $file" >> meta.yaml
-          done < changed.txt
+          done < changes.txt
+
+          # Convert back to YAML
+          echo "files:" > meta.yaml
+          jq -r "to_entries | .[] | \"  \(.key):\n    version: \\\"\(.value.version)\\\"\n    last_updated: \\\"\(.value.last_updated)\\\"\"" files.json >> meta.yaml
 
       - name: Commit changes
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add meta.yaml
-          git commit -m "Auto-update meta.yaml to version ${{ steps.version.outputs.new_version }} [skip ci]" || echo "No changes"
+          git commit -m "Update per-file versions [skip ci]" || echo "No changes"
 
       - name: Push changes
         uses: ad-m/github-push-action@v0.8.0
