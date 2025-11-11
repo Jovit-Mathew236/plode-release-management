@@ -1,0 +1,43 @@
+name: Update Meta
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  update-meta:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for git diff
+
+      - name: Detect changed files
+        id: changes
+        run: |
+          git diff --name-only HEAD~1 HEAD > changed.txt
+          echo "changed=$(cat changed.txt | tr '\n' ',' )" >> $GITHUB_OUTPUT
+
+      - name: Generate meta.yaml
+        run: |
+          echo "version: $(date +%s)" > meta.yaml
+          echo "last_updated: \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"" >> meta.yaml
+          echo "changed_files:" >> meta.yaml
+          while read file; do
+            echo "  - $file" >> meta.yaml
+          done < changed.txt
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add meta.yaml
+          git commit -m "Auto-update meta.yaml [skip ci]" || echo "No changes to commit"
+
+      - name: Push
+        uses: ad-m/github-push-action@v0.8.0
+        with:
+          branch: main
+          github_token: ${{ secrets.GITHUB_TOKEN }}
