@@ -39,18 +39,11 @@ jobs:
             [ -z "$path" ] && continue
             top=$(echo "$path" | cut -d'/' -f1)
 
-            # Skip system files or hidden files
+            # Skip non-firmware / system files
             case "$top" in
               .* | LICENSE | README* ) continue ;;
             esac
 
-            # Skip folders that are fully deleted (do not exist anymore)
-            if [ "$status" = "D" ] && [ ! -d "$top" ]; then
-              echo "Skipping deleted folder $top"
-              continue
-            fi
-
-            # Include only if folder still exists
             if [ -d "$top" ]; then
               echo "$top" >> /tmp/firmware_folders.txt
             fi
@@ -58,14 +51,13 @@ jobs:
 
           sort -u /tmp/firmware_folders.txt -o /tmp/firmware_folders.txt
           folders=$(cat /tmp/firmware_folders.txt | tr '\n' ' ')
-          echo "Detected folders: $folders"
           echo "folders=$folders" >> $GITHUB_OUTPUT
 
       - name: Check for unauthorized meta.yaml edits
         id: protect
         run: |
           echo "Checking for manually edited meta.yaml files..."
-          edited_meta=$(git diff --name-only HEAD~1 HEAD | grep "meta.yaml" || true)
+          edited_meta=$(git diff --name-status HEAD~1 HEAD | grep "meta.yaml" || true)
 
           if [ -z "$edited_meta" ]; then
             echo "no_meta_edit=true" >> $GITHUB_OUTPUT
@@ -73,12 +65,21 @@ jobs:
           fi
 
           unauthorized_files=()
-          for f in $edited_meta; do
-            author=$(git log -1 --pretty=format:'%an' -- "$f" || true)
-            if [ "$author" != "github-actions[bot]" ]; then
-              unauthorized_files+=("$f")
+          while read status file; do
+            [ -z "$file" ] && continue
+
+            # Skip if folder was deleted entirely
+            folder=$(dirname "$file" | cut -d'/' -f1)
+            if [ "$status" = "D" ] && [ ! -d "$folder" ]; then
+              echo "Skipping revert for deleted folder $folder"
+              continue
             fi
-          done
+
+            author=$(git log -1 --pretty=format:'%an' -- "$file" || true)
+            if [ "$author" != "github-actions[bot]" ]; then
+              unauthorized_files+=("$file")
+            fi
+          done <<< "$edited_meta"
 
           if [ ${#unauthorized_files[@]} -eq 0 ]; then
             echo "no_meta_edit=true" >> $GITHUB_OUTPUT
@@ -86,8 +87,13 @@ jobs:
           fi
 
           for f in "${unauthorized_files[@]}"; do
-            echo "Reverting unauthorized edit in $f"
-            git checkout HEAD~1 -- "$f" || true
+            folder=$(dirname "$f" | cut -d'/' -f1)
+            if [ -d "$folder" ]; then
+              echo "Reverting unauthorized edit in $f"
+              git checkout HEAD~1 -- "$f" || true
+            else
+              echo "Skipping revert — $folder was deleted."
+            fi
           done
 
           # Check if ONLY meta.yaml was changed (no firmware file changes)
