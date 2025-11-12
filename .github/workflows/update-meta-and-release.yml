@@ -1,4 +1,4 @@
-name: 🔄 Update Meta and Create Firmware Release
+name: Update Meta and Create Firmware Release
 
 on:
   push:
@@ -21,15 +21,15 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🧩 Set up Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      - name: 📦 Install dependencies
+      - name: Install dependencies
         run: pip install pyyaml
 
-      - name: 🔍 Detect changed firmware folders
+      - name: Detect changed firmware folders
         id: detect
         run: |
           echo "Detecting firmware folders changed..."
@@ -44,7 +44,7 @@ jobs:
           folders=$(cat firmware_folders.txt | tr '\n' ' ')
           echo "folders=$folders" >> $GITHUB_OUTPUT
 
-      - name: ⚙️ Update meta.yaml files
+      - name: Update meta.yaml files
         if: steps.detect.outputs.folders != ''
         env:
           FOLDERS: ${{ steps.detect.outputs.folders }}
@@ -81,11 +81,11 @@ jobs:
               with open(meta_path, "w") as f:
                   yaml.dump(data, f)
 
-              print(f"✅ Updated {meta_path} → version {version}")
+              print(f"Updated {meta_path} → version {version}")
 
         shell: python
 
-      - name: 💾 Commit and push updated meta.yaml
+      - name: Commit and push updated meta.yaml
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -93,7 +93,7 @@ jobs:
           git commit -m "🔄 Auto-update meta.yaml" || echo "No changes to commit"
           git push origin main
 
-      - name: 🚀 Create or update GitHub Release
+      - name: Create or update GitHub Release
         if: steps.detect.outputs.folders != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
