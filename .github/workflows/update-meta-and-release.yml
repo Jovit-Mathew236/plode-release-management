@@ -33,25 +33,35 @@ jobs:
         id: detect
         run: |
           echo "Detecting changed firmware folders..."
-          # Include added, modified, renamed files; exclude deleted ones
-          git diff --name-only --diff-filter=AMR HEAD~1 HEAD > changed_files.txt
+          # Detect all added, modified, or deleted files
+          git diff --name-status HEAD~1 HEAD > changed_files.txt
+          cat changed_files.txt || true
 
-          # Extract top-level directories
-          awk -F'/' '{print $1}' changed_files.txt | sort | uniq > all_folders.txt
-
-          # Filter only valid, existing firmware directories (not hidden)
           > firmware_folders.txt
-          while read f; do
-            if [ -d "$f" ] && [[ "$f" != .* ]]; then
-              echo "$f" >> firmware_folders.txt
+          while read status path; do
+            top=$(echo "$path" | cut -d'/' -f1)
+            # Skip hidden/system folders
+            if [[ "$top" == .* ]]; then
+              continue
             fi
-          done < all_folders.txt
 
-          echo "Filtered firmware folders:"
+            # If folder still exists, include it
+            if [ -d "$top" ]; then
+              echo "$top" >> firmware_folders.txt
+            else
+              # Folder deleted completely: mark for release cleanup later
+              echo "deleted:$top" >> firmware_folders.txt
+            fi
+          done < changed_files.txt
+
+          sort -u firmware_folders.txt -o firmware_folders.txt
+          echo "Detected firmware folders:"
           cat firmware_folders.txt || true
 
-          folders=$(cat firmware_folders.txt | tr '\n' ' ')
+          folders=$(grep -v '^deleted:' firmware_folders.txt | tr '\n' ' ')
+          deleted=$(grep '^deleted:' firmware_folders.txt | cut -d':' -f2 | tr '\n' ' ')
           echo "folders=$folders" >> $GITHUB_OUTPUT
+          echo "deleted=$deleted" >> $GITHUB_OUTPUT
 
       - name: Update meta.yaml files
         if: steps.detect.outputs.folders != ''
@@ -62,7 +72,6 @@ jobs:
 
           folders = os.environ.get("FOLDERS", "").split()
           if not folders:
-              print("No firmware folders to process.")
               sys.exit(0)
 
           for folder in folders:
@@ -96,12 +105,11 @@ jobs:
 
       - name: Commit and push updated meta.yaml
         run: |
-          # Check if any meta.yaml exists before committing
           if ls */meta.yaml 1> /dev/null 2>&1; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add */meta.yaml
-            git commit -m "Auto-update meta.yaml" || echo "No changes to commit"
+            git diff --cached --quiet && echo "No changes to commit." || git commit -m "Auto-update meta.yaml"
             git push origin main
           else
             echo "No meta.yaml files found, skipping commit."
@@ -130,9 +138,26 @@ jobs:
 
             echo "Creating or updating release for $folder (tag: $tag)"
             gh release create "$tag" $files \
-              --title "$folder v${version}" \
+              --title "$folder Firmware v${version}" \
               --notes "Automated firmware release for $folder (v${version})." \
               --target main \
               --latest \
               || gh release edit "$tag" --title "$folder Firmware v${version}" --notes "Updated firmware release."
+          done
+
+      - name: Delete releases for removed firmware folders
+        if: steps.detect.outputs.deleted != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DELETED: ${{ steps.detect.outputs.deleted }}
+        run: |
+          for folder in $DELETED; do
+            echo "Deleting release(s) for removed firmware folder: $folder"
+            tags=$(gh release list --limit 1000 --json tagName --jq '.[] | .tagName' | grep "^${folder}-v" || true)
+            for tag in $tags; do
+              echo "Removing release and tag: $tag"
+              gh release delete "$tag" --yes || true
+              git tag -d "$tag" || true
+              git push origin :refs/tags/"$tag" || true
+            done
           done
