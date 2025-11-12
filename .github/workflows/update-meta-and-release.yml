@@ -184,7 +184,7 @@ jobs:
               echo "Release exists; updating assets."
             else
               echo "Creating new release for $folder ($tag)"
-              gh release create "$tag" --title "$folder v${version}" --notes "Automated release for $folder (v${version})." --target main
+              gh release create "$tag" --title "$folder" --notes "Automated release for $folder (v${version})." --target main
             fi
 
             echo "Uploading changed assets for $folder..."
