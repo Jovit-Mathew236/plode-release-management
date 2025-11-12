@@ -1,4 +1,0 @@
-deleted:added_files.txt
-deleted:changed_files.txt
-deleted:deleted_files.txt
-deleted:firmware_folders.txt
