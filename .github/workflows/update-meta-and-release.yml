@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -32,44 +32,60 @@ jobs:
       - name: Detect changed firmware folders and files
         id: detect
         run: |
-          echo "Detecting changed firmware folders and files..."
-          git diff --name-status HEAD~1 HEAD > changed_files.txt
+          # generate name-status listing (A/M/D/R)
+          git diff --name-status HEAD~1 HEAD > changed_files.txt || true
           cat changed_files.txt || true
 
+          # reset lists
           > firmware_folders.txt
           > added_files.txt
           > deleted_files.txt
 
+          # parse changes
           while read status path; do
-            top=$(echo "$path" | cut -d'/' -f1)
-            if [[ "$top" == .* ]]; then
-              continue
-            fi
+            # if path is empty (e.g., no changes), skip
+            [ -z "$path" ] && continue
 
+            top=$(echo "$path" | cut -d'/' -f1)
+
+            # ignore hidden / dot root items like .github or .gitignore or README.md
+            case "$top" in
+              .* ) continue ;;
+            esac
+
+            # record added/modified vs deleted
             if [ "$status" = "D" ]; then
               echo "$path" >> deleted_files.txt
             else
               echo "$path" >> added_files.txt
             fi
 
+            # If top-level folder still exists in the checked-out repo, consider it a firmware folder candidate
             if [ -d "$top" ]; then
               echo "$top" >> firmware_folders.txt
+            else
+              # If directory does not exist, mark as deleted candidate (used later to remove releases)
+              echo "deleted:$top" >> firmware_folders.txt
             fi
           done < changed_files.txt
 
-          sort -u firmware_folders.txt -o firmware_folders.txt
+          sort -u firmware_folders.txt -o firmware_folders.txt || true
 
-          echo "Detected firmware folders:"
+          echo "Firmware folder candidates:"
           cat firmware_folders.txt || true
-          echo "Added/modified files:"
+          echo "-- added/modified files --"
           cat added_files.txt || true
-          echo "Deleted files:"
+          echo "-- deleted files --"
           cat deleted_files.txt || true
 
-          folders=$(cat firmware_folders.txt | tr '\n' ' ')
-          echo "folders=$folders" >> $GITHUB_OUTPUT
+          # export lists as outputs
+          folders=$(grep -v '^deleted:' firmware_folders.txt | tr '\n' ' ' || true)
+          deleted=$(grep '^deleted:' firmware_folders.txt | cut -d':' -f2 | tr '\n' ' ' || true)
 
-      - name: Update meta.yaml files
+          echo "folders=$folders" >> $GITHUB_OUTPUT
+          echo "deleted=$deleted" >> $GITHUB_OUTPUT
+
+      - name: Update meta.yaml per firmware
         if: steps.detect.outputs.folders != ''
         env:
           FOLDERS: ${{ steps.detect.outputs.folders }}
@@ -77,15 +93,15 @@ jobs:
           import os, yaml, datetime, subprocess, sys
 
           folders = os.environ.get("FOLDERS", "").split()
-          if not folders:
+          if not folders or folders == ['']:
               sys.exit(0)
 
           for folder in folders:
               if not os.path.isdir(folder):
-                  print(f"Skipping {folder} (not a valid directory)")
+                  print(f"Skipping {folder} (not a directory)")
                   continue
 
-              meta_path = f"{folder}/meta.yaml"
+              meta_path = os.path.join(folder, "meta.yaml")
               data = {}
 
               if os.path.exists(meta_path):
@@ -93,6 +109,7 @@ jobs:
                       data = yaml.safe_load(f) or {}
 
               version = float(data.get("version", 0))
+              # simple minor increment policy; change if you prefer semver
               version = round(version + 0.1, 1)
 
               data.update({
@@ -105,53 +122,101 @@ jobs:
               with open(meta_path, "w") as f:
                   yaml.dump(data, f)
 
-              print(f"Updated {meta_path} → version {version}")
+              print(f"Updated {meta_path} -> version {version}")
 
         shell: python
 
-      - name: Commit and push updated meta.yaml
+      - name: Commit and push updated meta.yaml (if any)
         run: |
+          # only attempt if meta files exist
           if ls */meta.yaml 1> /dev/null 2>&1; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add */meta.yaml
-            git diff --cached --quiet && echo "No changes to commit." || git commit -m "Auto-update meta.yaml"
-            git push origin main
+            git add --all
+            # check if anything to commit
+            if git diff --cached --quiet; then
+              echo "No changes to commit."
+            else
+              git commit -m "Auto-update meta.yaml"
+              git push origin main
+            fi
           else
-            echo "No meta.yaml files found, skipping commit."
+            echo "No meta.yaml files found; skipping commit."
           fi
 
-      - name: Create or update GitHub Releases per firmware
+      - name: Create/update releases and upload changed assets
         if: steps.detect.outputs.folders != ''
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FOLDERS: ${{ steps.detect.outputs.folders }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Preparing release assets..."
-          cat added_files.txt || true
+          # prepare lists
+          ADDED_FILE_LIST=added_files.txt
+          DELETED_FILE_LIST=deleted_files.txt
 
           for folder in $FOLDERS; do
+            # skip if folder no longer exists (handled in deleted step)
             if [ ! -d "$folder" ]; then
-              echo "Skipping release for $folder (folder deleted)"
+              echo "Skipping $folder (not present in checkout)"
               continue
             fi
 
-            version=$(grep 'version:' "$folder/meta.yaml" | awk '{print $2}')
+            # read current version
+            version=$(grep '^version:' "$folder/meta.yaml" | awk '{print $2}')
             tag="${folder}-v${version}"
 
-            files=$(grep "^${folder}/" added_files.txt || true)
-            if [ -z "$files" ]; then
-              echo "No new or modified files detected in $folder, using only meta.yaml"
-              files="$folder/meta.yaml"
+            # build upload file list: only added/modified files in this folder, plus meta.yaml always
+            files_to_upload=""
+            while read -r f; do
+              case "$f" in
+                $folder/*) files_to_upload="$files_to_upload \"$f\"" ;;
+              esac
+            done < $ADDED_FILE_LIST || true
+
+            # always include meta.yaml
+            files_to_upload="$files_to_upload \"$folder/meta.yaml\""
+
+            # create release if missing
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "Release $tag exists; updating."
             else
-              files="$files $folder/meta.yaml"
+              echo "Creating release $tag (no assets yet)."
+              gh release create "$tag" --title "$folder Firmware v${version}" --notes "Automated firmware release for $folder (v${version})." --target main
             fi
 
-            echo "Creating or updating release for $folder (tag: $tag)"
-            gh release create "$tag" $files \
-              --title "$folder v${version}" \
-              --notes "Automated firmware release for $folder (v${version})." \
-              --target main \
-              --latest \
-              || gh release edit "$tag" --notes "Updated firmware release for $folder (v${version})."
+            # upload changed files; use --clobber to overwrite same-named assets
+            # note: expand the quoted filenames using eval
+            if [ -n "$files_to_upload" ]; then
+              eval gh release upload "$tag" $files_to_upload --clobber || {
+                echo "Warning: upload for $tag failed"
+              }
+            else
+              echo "No added/modified files to upload for $folder; only meta.yaml will be attached."
+              gh release upload "$tag" "$folder/meta.yaml" --clobber || true
+            fi
+
+            # update release notes with a minimal changelog
+            added=$(grep "^$folder/" $ADDED_FILE_LIST || true)
+            deleted=$(grep "^$folder/" $DELETED_FILE_LIST || true)
+            changelog="Files added/modified:\n${added}\n\nFiles deleted:\n${deleted}"
+
+            gh release edit "$tag" --notes "Automated firmware release for $folder (v${version}).\n\nChangelog:\n${changelog}" || true
+          done
+
+      - name: Delete releases for removed firmware folders
+        if: steps.detect.outputs.deleted != ''
+        env:
+          DELETED: ${{ steps.detect.outputs.deleted }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for folder in $DELETED; do
+            [ -z "$folder" ] && continue
+            # find release tags that start with "<folder>-v"
+            tags=$(gh release list --limit 1000 --json tagName --jq '.[] | .tagName' | grep "^${folder}-v" || true)
+            for tag in $tags; do
+              echo "Deleting release and tag: $tag"
+              gh release delete "$tag" --yes || true
+              git tag -d "$tag" || true
+              git push origin :refs/tags/"$tag" || true
+            done
           done
