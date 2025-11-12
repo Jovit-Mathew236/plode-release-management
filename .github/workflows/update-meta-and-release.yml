@@ -122,7 +122,7 @@ jobs:
 
             echo "Creating or updating release for $folder (tag: $tag)"
             gh release create "$tag" $files \
-              --title "$folder Firmware v${version}" \
+              --title "$folder v${version}" \
               --notes "Automated firmware release for $folder (v${version})." \
               --target main \
               --latest \
