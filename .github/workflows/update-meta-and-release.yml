@@ -1,0 +1,89 @@
+name: 🔄 Update Meta and Create Firmware Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**/*'  # Trigger for any file change
+
+permissions:
+  contents: write
+
+jobs:
+  update-meta:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🛠️ Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🧩 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: 📦 Install dependencies
+        run: pip install pyyaml
+
+      - name: 🔍 Detect changed firmware folders
+        id: detect
+        run: |
+          echo "Detecting firmware folders changed..."
+          git diff --name-only HEAD~1 HEAD > changed_files.txt
+          echo "Changed files:"
+          cat changed_files.txt
+
+          # Extract firmware folder names
+          awk -F'/' '{print $1}' changed_files.txt | sort | uniq > firmware_folders.txt
+          echo "Changed firmware folders:"
+          cat firmware_folders.txt
+
+          folders=$(cat firmware_folders.txt | tr '\n' ' ')
+          echo "folders=$folders" >> $GITHUB_OUTPUT
+
+      - name: ⚙️ Update meta.yaml files
+        if: steps.detect.outputs.folders != ''
+        run: |
+          import os, yaml, datetime, subprocess
+          folders = os.environ["folders"].split()
+          for folder in folders:
+              meta_path = f"{folder}/meta.yaml"
+              data = {}
+              if os.path.exists(meta_path):
+                  with open(meta_path) as f:
+                      data = yaml.safe_load(f) or {}
+              version = data.get("version", 0)
+              data["version"] = float(version) + 0.1
+              data["last_updated"] = datetime.datetime.utcnow().isoformat()
+              data["last_commit"] = subprocess.getoutput("git rev-parse HEAD")
+              data["folder"] = folder
+              with open(meta_path, "w") as f:
+                  yaml.dump(data, f)
+              print(f"✅ Updated {meta_path} → version {data['version']}")
+
+        shell: python
+
+      - name: 💾 Commit and push updated meta.yaml
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add */meta.yaml
+          git commit -m "🔄 Auto-update meta.yaml" || echo "No changes to commit"
+          git push origin main
+
+      - name: 🚀 Create or update GitHub Release
+        run: |
+          folders="${{ steps.detect.outputs.folders }}"
+          for folder in $folders; do
+            version=$(grep 'version:' "$folder/meta.yaml" | awk '{print $2}')
+            tag="${folder}-v${version}"
+            echo "Creating release for $folder → $tag"
+            gh release create "$tag" "$folder" --notes "Firmware release for $folder (v${version})" --latest
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
