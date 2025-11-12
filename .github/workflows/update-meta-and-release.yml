@@ -1,4 +1,4 @@
-name: 🔄 Update Meta and Create Firmware Release
+name: Update Meta and Create Firmware Release
 
 on:
   push:
