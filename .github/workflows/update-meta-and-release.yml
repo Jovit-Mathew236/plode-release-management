@@ -5,10 +5,10 @@ on:
     branches:
       - main
     paths:
-      - '**/*'  # Trigger on any file change
+      - '**/*'
 
 permissions:
-  contents: write  # Allow write access for commits and releases
+  contents: write
 
 jobs:
   update-meta:
@@ -33,13 +33,18 @@ jobs:
         id: detect
         run: |
           echo "Detecting changed firmware folders..."
-          git diff --name-only HEAD~1 HEAD > changed_files.txt
-          echo "Changed files:"
-          cat changed_files.txt || true
+          # Include added, modified, and renamed files; exclude deleted ones
+          git diff --name-only --diff-filter=AMR HEAD~1 HEAD > changed_files.txt
 
-          # Extract top-level folders (like ZG3.0, ZG3.1)
-          awk -F'/' '{print $1}' changed_files.txt | sort | uniq > firmware_folders.txt
-          echo "Changed firmware folders:"
+          awk -F'/' '{print $1}' changed_files.txt | sort | uniq > all_folders.txt
+          # Filter only top-level, non-hidden, existing directories
+          while read f; do
+            if [ -d "$f" ] && [[ "$f" != .* ]]; then
+              echo "$f" >> firmware_folders.txt
+            fi
+          done < all_folders.txt
+
+          echo "Filtered firmware folders:"
           cat firmware_folders.txt || true
 
           folders=$(cat firmware_folders.txt | tr '\n' ' ')
@@ -54,12 +59,11 @@ jobs:
 
           folders = os.environ.get("FOLDERS", "").split()
           if not folders:
-              print("No changed firmware folders found.")
               sys.exit(0)
 
           for folder in folders:
               if not os.path.isdir(folder):
-                  print(f"Skipping {folder} (not a directory)")
+                  print(f"Skipping {folder} (not a valid directory)")
                   continue
 
               meta_path = f"{folder}/meta.yaml"
@@ -79,6 +83,7 @@ jobs:
                   "folder": folder
               })
 
+              os.makedirs(folder, exist_ok=True)
               with open(meta_path, "w") as f:
                   yaml.dump(data, f)
 
@@ -101,22 +106,21 @@ jobs:
           FOLDERS: ${{ steps.detect.outputs.folders }}
         run: |
           for folder in $FOLDERS; do
-            echo "Processing firmware folder: $folder"
+            if [ ! -d "$folder" ]; then
+              echo "Skipping $folder (folder deleted)"
+              continue
+            fi
+
             version=$(grep 'version:' "$folder/meta.yaml" | awk '{print $2}')
             tag="${folder}-v${version}"
 
-            echo "Tag name: $tag"
-            echo "Creating or updating release..."
-
-            # Collect files (.bin, .mp3, meta.yaml)
             files=$(find "$folder" -type f \( -name "*.bin" -o -name "*.mp3" -o -name "meta.yaml" \))
-
             if [ -z "$files" ]; then
               echo "No files found to attach for $folder"
               continue
             fi
 
-            # Create or update release
+            echo "Creating or updating release for $folder (tag: $tag)"
             gh release create "$tag" $files \
               --title "$folder Firmware v${version}" \
               --notes "Automated firmware release for $folder (v${version})." \
