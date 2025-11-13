@@ -138,8 +138,12 @@ jobs:
                   with open(meta_path) as f:
                       data = yaml.safe_load(f) or {}
 
-              version = float(data.get("version", 0))
-              version = round(version + 0.1, 1)
+              current_version = float(data.get("version", 0))
+              # Start new folders at version 1.0, increment existing by 0.1
+              if current_version == 0:
+                  version = 1.0
+              else:
+                  version = round(current_version + 0.1, 1)
 
               now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
               data.update({
@@ -173,6 +177,12 @@ jobs:
             echo "No meta.yaml files found; skipping commit."
           fi
 
+      - name: Fetch latest changes with updated meta.yaml
+        if: steps.detect.outputs.folders != '' && steps.protect.outputs.only_meta_edit != 'true'
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+
       - name: Create or update GitHub releases per firmware
         if: steps.detect.outputs.folders != '' && steps.protect.outputs.only_meta_edit != 'true'
         env:
@@ -182,9 +192,12 @@ jobs:
           for folder in $FOLDERS; do
             [ ! -d "$folder" ] && continue
 
+            # Read the updated version from meta.yaml
             version=$(grep '^version:' "$folder/meta.yaml" | awk '{print $2}')
             tag="${folder}"
 
+            echo "Processing $folder with version $version"
+            
             # Create source code archives
             archive_base="${folder}-v${version}"
             zip_file="${archive_base}.zip"
