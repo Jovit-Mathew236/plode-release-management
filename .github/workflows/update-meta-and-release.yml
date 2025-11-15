@@ -316,6 +316,19 @@ jobs:
             tag="${folder}"
 
             echo "Processing $folder with version $version"
+            
+            # Create source code archives
+            archive_base="${folder}-v${version}"
+            zip_file="${archive_base}.zip"
+            tar_file="${archive_base}.tar.gz"
+
+            echo "Creating source code archives for $folder..."
+
+            # Create zip archive
+            zip -r "$zip_file" "$folder" -x "*.git*" || true
+
+            # Create tar.gz archive
+            tar -czf "$tar_file" --exclude=".git*" "$folder" || true
 
             # Determine changed files inside this folder
             changed_files=$(git diff --name-only HEAD~1 HEAD | grep "^${folder}/" || true)
@@ -326,12 +339,6 @@ jobs:
               files_to_upload="$changed_files $folder/meta.yaml"
             fi
 
-            # Check if zip file exists in the folder
-            folder_zip="$folder/${folder}.zip"
-            if [ -f "$folder_zip" ]; then
-              files_to_upload="$files_to_upload $folder_zip"
-            fi
-
             if gh release view "$tag" >/dev/null 2>&1; then
               echo "Release exists; updating assets."
             else
@@ -339,12 +346,19 @@ jobs:
               gh release create "$tag" --title "$folder" --notes "Automated release for $folder (v${version})." --target main
             fi
 
-            echo "Uploading assets for $folder..."
+            echo "Uploading source code archives for $folder..."
+            gh release upload "$tag" "$zip_file" --clobber || true
+            gh release upload "$tag" "$tar_file" --clobber || true
+
+            echo "Uploading changed assets for $folder..."
             for f in $files_to_upload; do
               if [ -f "$f" ]; then
                 gh release upload "$tag" "$f" --clobber || true
               fi
             done
+
+            # Clean up archive files
+            rm -f "$zip_file" "$tar_file"
 
             added=$(git diff --name-status HEAD~1 HEAD | grep "^A" | grep "$folder" || true)
             modified=$(git diff --name-status HEAD~1 HEAD | grep "^M" | grep "$folder" || true)
