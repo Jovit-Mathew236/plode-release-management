@@ -1,4 +1,6 @@
 ZG2.0:
-  discription: 12v moter is using
+  discription: With 12v moter
 ZG2.1:
-  discription: 9v moter is using
+  discription: With 9v moter
+ZG3.0:
+  discription: With OLED
