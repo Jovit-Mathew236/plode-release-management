@@ -3,7 +3,7 @@ name: Update Meta and Create Firmware Release
 on:
   push:
     branches:
-      - main
+      - asset-management
     paths:
       - "**/*"
 
@@ -150,7 +150,7 @@ jobs:
           git add --all
           if ! git diff --cached --quiet; then
             git commit -m "Revert unauthorized firmware folder deletion by $actor - Deleted folders restored: ${deleted_folders[*]} - Only repository admins/owners can delete firmware folders."
-            git push origin main
+            git push origin asset-management
             echo "Folders restored and pushed."
           fi
 
@@ -241,7 +241,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add --all
           git commit -m "Revert unauthorized meta.yaml edit" || true
-          git push origin main || true
+          git push origin asset-management || true
           exit 0
 
       - name: Update meta.yaml files and create zip archives
@@ -374,7 +374,7 @@ jobs:
               echo "No changes to commit."
             else
               git commit -m "Auto-update meta.yaml"
-              git push origin main
+              git push origin asset-management
             fi
           else
             echo "No meta.yaml files found; skipping commit."
@@ -383,8 +383,8 @@ jobs:
       - name: Fetch latest changes with updated meta.yaml
         if: steps.detect.outputs.folders != '' && steps.protect.outputs.only_meta_edit != 'true'
         run: |
-          git fetch origin main
-          git reset --hard origin/main
+          git fetch origin asset-management
+          git reset --hard origin/asset-management
 
       - name: Create or update GitHub releases per firmware
         if: steps.detect.outputs.folders != '' && steps.protect.outputs.only_meta_edit != 'true'
@@ -420,7 +420,7 @@ jobs:
               echo "Release exists; updating assets."
             else
               echo "Creating new release for $folder ($tag)"
-              gh release create "$tag" --title "$folder" --notes "Automated release for $folder (v${version})." --target main
+              gh release create "$tag" --title "$folder" --notes "Automated release for $folder (v${version})." --target asset-management
             fi
 
             echo "Uploading assets for $folder..."
