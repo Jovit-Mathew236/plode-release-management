@@ -374,6 +374,11 @@ jobs:
               echo "No changes to commit."
             else
               git commit -m "Auto-update meta.yaml"
+              # Pull with rebase before pushing to handle any remote changes
+              git pull --rebase origin asset-management || {
+                echo "Rebase failed, trying regular pull"
+                git pull origin asset-management
+              }
               git push origin asset-management
             fi
           else
